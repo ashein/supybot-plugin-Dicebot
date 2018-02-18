@@ -55,9 +55,10 @@ class Dicebot(callbacks.Plugin):
     rollReSR       = re.compile(r'(?P<rolls>\d+)#sd$')
     rollReSRX      = re.compile(r'(?P<rolls>\d+)#sdx$')
     rollReSRE      = re.compile(r'(?P<pool>\d+),(?P<thr>\d+)#sde$')
-    rollRe7Sea     = re.compile(r'((?P<count>\d+)#)?(?P<prefix>-|\+)?(?P<rolls>\d+)(?P<k>k{1,2})(?P<keep>\d+)(?P<mod>[+-]\d+)?$')
+    rollRe7Sea     = re.compile(r'((?P<count>\d+)#)?(?P<prefix>[-+])?(?P<rolls>\d+)(?P<k>k{1,2})(?P<keep>\d+)(?P<mod>[+-]\d+)?$')
     rollReWoD      = re.compile(r'(?P<rolls>\d+)w(?P<explode>\d|-)?$')
     rollReDH       = re.compile(r'(?P<rolls>\d*)vs\((?P<thr>([-+]|\d)+)\)$')
+    rollReWG       = re.compile(r'(?P<rolls>\d+)#wg$')
 
     MAX_DICE = 1000
     MIN_SIDES = 2
@@ -78,7 +79,7 @@ class Dicebot(callbacks.Plugin):
         mod -- number added to the total result (optional);
         """
         res = int(mod)
-        for i in xrange(dice):
+        for i in range(dice):
             res += random.randrange(1, sides+1)
         return res
 
@@ -97,7 +98,7 @@ class Dicebot(callbacks.Plugin):
         # First roll normally, but put aside failed (below threshold) rolls.
         res = int(mod)
         rerolls = 0
-        for i in xrange(dice):
+        for i in range(dice):
             roll = random.randrange(1, sides+1)
             if roll <= threshold:
                 rerolls += 1
@@ -122,9 +123,10 @@ class Dicebot(callbacks.Plugin):
         rolls -- number of times dice are rolled;
         mod -- number added to the each total result (optional);
         """
-        return [self._roll(dice, sides, mod) for i in xrange(rolls)]
+        return [self._roll(dice, sides, mod) for i in range(rolls)]
 
-    def _formatMod(self, mod):
+    @staticmethod
+    def _formatMod(mod):
         """
         Format a numeric modifier for printing expressions such as 1d20+3.
 
@@ -149,6 +151,7 @@ class Dicebot(callbacks.Plugin):
                 (self.rollRe7Sea, self._parse7SeaRoll),
                 (self.rollReWoD, self._parseWoDRoll),
                 (self.rollReDH, self._parseDHRoll),
+                (self.rollReWG, self._parseWGRoll),
                 ]
         results = [ ]
         for word in text.split():
@@ -205,7 +208,7 @@ class Dicebot(callbacks.Plugin):
             key = ''.join([str(sides), reroll > 0 and ''.join(['r', str(reroll)]) or ''])
             totalDice[key] = totalDice.get(key, 0) + dice
 
-        if (len(totalDice) == 0):
+        if len(totalDice) == 0:
             return
 
         # Key regex for the dice dictionary:
@@ -213,9 +216,9 @@ class Dicebot(callbacks.Plugin):
         dieSpec = re.compile(r'(?P<sides>\-?\d+)(r(?P<reroll>\d+))?')
         # Roll those collected dice
         results = []
-        for _ in xrange(rolls):
+        for _ in range(rolls):
             result = totalMod
-            for key, dice in totalDice.iteritems():
+            for key, dice in totalDice.items():
                 # Unpack the key
                 opts = dieSpec.match(key)
                 sides = int(opts.group('sides'))
@@ -238,7 +241,7 @@ class Dicebot(callbacks.Plugin):
         specFormatted = ''
         weighter = re.compile(r'-?\d+')
         self.log.debug(repr(totalDice))
-        for key, dice in sorted(totalDice.items(), key=lambda item: int(weighter.match(item[0]).group()), reverse=True):
+        for key, dice in sorted(list(totalDice.items()), key=lambda item: int(weighter.match(item[0]).group()), reverse=True):
             opts = dieSpec.match(key)
             sides = int(opts.group('sides'))
             if sides > 0:
@@ -282,7 +285,8 @@ class Dicebot(callbacks.Plugin):
             reroll = rerolled.count(6)
         return self._processSRResults(L, rolls, True)
 
-    def _processSRResults(self, results, pool, isExploding=False):
+    @staticmethod
+    def _processSRResults(results, pool, isExploding=False):
         hits = results.count(6) + results.count(5)
         ones = results.count(1)
         isHit = hits > 0
@@ -358,10 +362,10 @@ class Dicebot(callbacks.Plugin):
         unkept = (prefix == '+' or k == 'kk') and keep < rolls
         explodeStr = ', not exploding' if not explode else ''
         results = []
-        for _ in xrange(count):
+        for _ in range(count):
             L = self._rollMultiple(1, 10, rolls)
             if explode:
-                for i in xrange(len(L)):
+                for i in range(len(L)):
                     if L[i] == 10:
                         while True:
                             rerolled = self._roll(1, 10)
@@ -388,7 +392,7 @@ class Dicebot(callbacks.Plugin):
             return
         if m.group('explode') == '-':
             explode = 0
-        elif m.group('explode') != None and m.group('explode').isdigit():
+        elif m.group('explode') is not None and m.group('explode').isdigit():
             explode = int(m.group('explode'))
             if explode < 8 or explode > 10:
                 explode = 10
@@ -398,7 +402,7 @@ class Dicebot(callbacks.Plugin):
         self.log.debug(format("%L", [str(i) for i in L]))
         successes = len([x for x in L if x >= 8])
         if explode:
-            for i in xrange(len(L)):
+            for i in range(len(L)):
                 if L[i] >= explode:
                     while True:
                         rerolled = self._roll(1, 10)
@@ -438,6 +442,26 @@ class Dicebot(callbacks.Plugin):
                                   ', '.join([str(i) for i in rollResults]),
                                   threshold)
 
+    def _parseWGRoll(self, m):
+        """
+        Parse WH40K: Wrath & Glory roll (10#wg)
+        """
+        rolls = int(m.group('rolls') or 1)
+        if rolls < 1 or rolls > self.MAX_ROLLS:
+            return
+
+        L = self._rollMultiple(1, 6, rolls)
+        self.log.debug(format("%L", [str(i) for i in L]))
+        return self._processWGResults(L, rolls)
+
+    @staticmethod
+    def _processWGResults(results, pool):
+        icons = 2 * results.count(6) + results.count(5) + results.count(4)
+        isNonZero = icons > 0
+        if isNonZero:
+            iconsStr = format('%n', (icons, 'icon'))
+            return '(pool %d) %s' % (pool, iconsStr)
+
     def _autoRollEnabled(self, irc, channel):
         """
         Check if automatic rolling is enabled for this context.
@@ -474,7 +498,7 @@ class Dicebot(callbacks.Plugin):
 
         Draws <count> cards (1 if omitted) from the deck and shows them.
         """
-        cards = [self.deck.next() for i in xrange(count)]
+        cards = [next(self.deck) for i in range(count)]
         irc.reply(', '.join(cards))
     draw = wrap(draw, [additional('positiveInt', 1)])
     deal = draw
