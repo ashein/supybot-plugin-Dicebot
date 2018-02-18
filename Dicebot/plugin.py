@@ -45,7 +45,13 @@ class Dicebot(callbacks.Plugin):
     autoRollInPrivate option is enabled).
     """
 
-    rollReStandard = re.compile(r'((?P<rolls>\d+)#)?(?P<spec>[+-]?(\d*d\d+|\d+)([+-](\d*d\d+|\d+))*)$')
+    """
+    DND rolls have:
+    - An optional prefix (e.g. 4#) signifying number of rerolls in whole
+    - A base dice-set to roll (e.g. d20, 2d8 etc)
+    - Zero or more further modifiers, rolls/flat values (+4, +d6, +d8+d4-2)
+    """
+    rollReStandard = re.compile(r'((?P<rolls>\d+)#)?(?P<spec>[+-]?(\d*d\d+(r\d*)?|\d+)([+-](\d*d\d+(r\d*)?|\d+))*)$')
     rollReSR       = re.compile(r'(?P<rolls>\d+)#sd$')
     rollReSRX      = re.compile(r'(?P<rolls>\d+)#sdx$')
     rollReSRE      = re.compile(r'(?P<pool>\d+),(?P<thr>\d+)#sde$')
@@ -74,6 +80,32 @@ class Dicebot(callbacks.Plugin):
         res = int(mod)
         for i in xrange(dice):
             res += random.randrange(1, sides+1)
+        return res
+
+    def _rollLucky(self, dice, sides, threshold=1,  mod=0):
+        """
+        Do the normal dice rolls with modifier, but if any single die rolls
+        at or below the threshold, reroll once and use that die instead.
+
+        Arguments:
+        dice -- number of dice rolled;
+        sides -- number of sides for the dice;
+        threshold -- optional, reroll threshold (default: 0 - lucky die)
+        mod -- optional, base offset for the total sum (default: 0)
+        """
+
+        # First roll normally, but put aside failed (below threshold) rolls.
+        res = int(mod)
+        rerolls = 0
+        for i in xrange(dice):
+            roll = random.randrange(1, sides+1)
+            if roll <= threshold:
+                rerolls += 1
+            else:
+                res += roll
+        # If some dice were below threshold and discarded, reroll them as normal.
+        if rerolls > 0:
+            res += self._roll(rerolls, sides)
         return res
 
     def _rollMultiple(self, dice, sides, rolls=1, mod=0):
@@ -138,48 +170,86 @@ class Dicebot(callbacks.Plugin):
         static modifiers. It yields one number (the sum of results and
         modifiers) for each roll series.
         """
+
+        # The main number of major rerolls is simple.
         rolls = int(m.group('rolls') or 1)
+        # The spec consist of a series of similar blocks/elements.
         spec = m.group('spec')
         if not spec[0] in '+-':
             spec = '+' + spec
-        r = re.compile(r'(?P<sign>[+-])((?P<dice>\d*)d(?P<sides>\d+)|(?P<mod>\d+))')
+        # Data extractor regex for an element (either roll, roll+static or just static)
+        r = re.compile(r'(?P<sign>[+-])((?P<dice>\d*)d(?P<sides>\d+)(?P<reroll>r(?P<rval>\d+)?)?|(?P<mod>\d+))')
 
         totalMod = 0
         totalDice = {}
+        # Cycle through spec elements
         for m in r.finditer(spec):
+            # Simple integer mod is, well, simple.
             if not m.group('mod') is None:
                 totalMod += int(m.group('sign') + m.group('mod'))
                 continue
+            # Otherwise collect dice spec occurences and get their counts by sides.
+            # Track dice substractions separately with negative keys.
             dice = int(m.group('dice') or 1)
             sides = int(m.group('sides'))
+            # If reroll chunk is present, get the custom threshold if possible.
+            reroll = m.group('reroll') and (int(m.group('rval') or 1)) or 0
+            # Sanity checks on values
             if dice > self.MAX_DICE or sides > self.MAX_SIDES or sides < self.MIN_SIDES:
                 return
-            if (m.group('sign') == '-'):
+            if reroll >= sides:
+                return
+            if m.group('sign') == '-':
                 sides *= -1
-            totalDice[sides] = totalDice.get(sides, 0) + dice
+            # Dice keyed with -?\d+(r\d*)? (see below)
+            key = ''.join([str(sides), reroll > 0 and ''.join(['r', str(reroll)]) or ''])
+            totalDice[key] = totalDice.get(key, 0) + dice
 
         if (len(totalDice) == 0):
             return
 
+        # Key regex for the dice dictionary:
+        # die sides including optional negation + optional reroll threshold).
+        dieSpec = re.compile(r'(?P<sides>\-?\d+)(r(?P<reroll>\d+))?')
+        # Roll those collected dice
         results = []
         for _ in xrange(rolls):
             result = totalMod
-            for sides, dice in totalDice.iteritems():
-                if sides > 0:
-                    result += self._roll(dice, sides)
+            for key, dice in totalDice.iteritems():
+                # Unpack the key
+                opts = dieSpec.match(key)
+                sides = int(opts.group('sides'))
+                reroll = opts.group('reroll') and int(opts.group('reroll')) or 0
+                # Switch to rerollable dice if a threshold is provided.
+                if reroll > 0:
+                    if sides > 0:
+                        result += self._rollLucky(dice, sides, reroll)
+                    else:
+                        result -= self._rollLucky(dice, -sides, reroll)
                 else:
-                    result -= self._roll(dice, -sides)
+                    if sides > 0:
+                        result += self._roll(dice, sides)
+                    else:
+                        result -= self._roll(dice, -sides)
             results.append(result)
 
+        # We want to generate a sorted roll-specifying string to show, too.
+        # Sort dice/modifiers by their sides/values, descending.
         specFormatted = ''
+        weighter = re.compile(r'-?\d+')
         self.log.debug(repr(totalDice))
-        for sides, dice in sorted(totalDice.items(), key=itemgetter(0), reverse=True):
+        for key, dice in sorted(totalDice.items(), key=lambda item: int(weighter.match(item[0]).group()), reverse=True):
+            opts = dieSpec.match(key)
+            sides = int(opts.group('sides'))
             if sides > 0:
                 if len(specFormatted) > 0:
                     specFormatted += '+'
                 specFormatted += '%dd%d' % (dice, sides)
             else:
                 specFormatted += '-%dd%d' % (dice, -sides)
+            reroll = opts.group('reroll') and int(opts.group('reroll')) or 0
+            if reroll > 0:
+                specFormatted += ''.join(['r', str(reroll)])
         specFormatted += self._formatMod(totalMod)
 
         return '[%s] %s' % (specFormatted, ', '.join([str(i) for i in results]))
