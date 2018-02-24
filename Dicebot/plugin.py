@@ -1,5 +1,5 @@
 ###
-# Copyright (c) 2007-2010, Andrey Rahmatullin
+# Copyright (c) 2007-2018, Andrey Rahmatullin
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -32,6 +32,7 @@ from .deck import Deck
 from operator import itemgetter
 import re
 import random
+import math
 
 from supybot.commands import additional, wrap
 from supybot.utils.str import format, ordinal
@@ -83,10 +84,11 @@ class Dicebot(callbacks.Plugin):
             res += random.randrange(1, sides+1)
         return res
 
-    def _rollLucky(self, dice, sides, threshold=1,  mod=0):
+    def _rollLucky(self, dice, sides, threshold=1, mod=0):
         """
         Do the normal dice rolls with modifier, but if any single die rolls
         at or below the threshold, reroll once and use that die instead.
+        Return a tuple with the final result and number of rerolls that occured.
 
         Arguments:
         dice -- number of dice rolled;
@@ -107,7 +109,7 @@ class Dicebot(callbacks.Plugin):
         # If some dice were below threshold and discarded, reroll them as normal.
         if rerolls > 0:
             res += self._roll(rerolls, sides)
-        return res
+        return (res, rerolls)
 
     def _rollMultiple(self, dice, sides, rolls=1, mod=0):
         """
@@ -153,7 +155,7 @@ class Dicebot(callbacks.Plugin):
                 (self.rollReDH, self._parseDHRoll),
                 (self.rollReWG, self._parseWGRoll),
                 ]
-        results = [ ]
+        results = []
         for word in text.split():
             for expr, parser in checklist:
                 m = expr.match(word)
@@ -212,29 +214,30 @@ class Dicebot(callbacks.Plugin):
             return
 
         # Key regex for the dice dictionary:
-        # die sides including optional negation + optional reroll threshold).
+        # die sides group including optional negation + optional reroll threshold group.
         dieSpec = re.compile(r'(?P<sides>\-?\d+)(r(?P<reroll>\d+))?')
         # Roll those collected dice
         results = []
         for _ in range(rolls):
             result = totalMod
+            rerolls = 0
             for key, dice in totalDice.items():
                 # Unpack the key
                 opts = dieSpec.match(key)
                 sides = int(opts.group('sides'))
-                reroll = opts.group('reroll') and int(opts.group('reroll')) or 0
-                # Switch to rerollable dice if a threshold is provided.
+                reroll = int(opts.group('reroll') or 0)
+                # Switch to rerollable dice if a threshold is provided, track num of rerolls.
                 if reroll > 0:
-                    if sides > 0:
-                        result += self._rollLucky(dice, sides, reroll)
-                    else:
-                        result -= self._rollLucky(dice, -sides, reroll)
+                    outcome = self._rollLucky(dice, math.fabs(sides), reroll)
+                    result += outcome[0] * (1 if sides > 0 else -1)
+                    rerolls += outcome[1]
                 else:
                     if sides > 0:
                         result += self._roll(dice, sides)
                     else:
                         result -= self._roll(dice, -sides)
-            results.append(result)
+            strRerolls = (' (reroll)' if rerolls == 1 else ' (%i rerolls)' % rerolls) if rerolls > 0 else  ''
+            results.append(''.join([str(result), strRerolls]))
 
         # We want to generate a sorted roll-specifying string to show, too.
         # Sort dice/modifiers by their sides/values, descending.
@@ -255,7 +258,7 @@ class Dicebot(callbacks.Plugin):
                 specFormatted += ''.join(['r', str(reroll)])
         specFormatted += self._formatMod(totalMod)
 
-        return '[%s] %s' % (specFormatted, ', '.join([str(i) for i in results]))
+        return '[%s] %s' % (specFormatted, ', '.join([i for i in results]))
 
     def _parseShadowrunRoll(self, m):
         """
@@ -381,7 +384,6 @@ class Dicebot(callbacks.Plugin):
 
         return '[%dk%d%s%s] %s' % (rolls, keep, self._formatMod(mod), explodeStr,
                                    '; '.join(results))
-
 
     def _parseWoDRoll(self, m):
         """

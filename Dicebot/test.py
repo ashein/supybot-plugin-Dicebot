@@ -50,15 +50,19 @@ class DicebotTestCase(PluginTestCase):
         self.assertNoResponse('dicebot roll 1d1')
 
     def testRollStdRerolls(self):
+        # Test actual result, ignoring possible reroll indicators.
         self.assertRegexp('dicebot roll d20r', r'\[1d20r1\] \d+')
         self.assertRegexp('dicebot roll d20r+d4+5', r'\[1d20r1\+1d4\+5\] \d+')
         self.assertRegexp('dicebot roll d12r2', r'\[1d12r2\] \d+')
         self.assertRegexp('dicebot roll 1d20+d8r2+2d4r1-2', r'\[1d20\+1d8r2\+2d4r1\-2] \d+')
         self.assertNoResponse('dicebot roll d4r4')
-        # Mult variants
-        self.assertRegexp('dicebot roll 2#d20r1', r'\[1d20r1] \d+, \d+')
-        self.assertRegexp('dicebot roll 4#2d8r2', r'\[2d8r2] \d+, \d+, \d+, \d+')
-        self.assertRegexp('dicebot roll 2#d20r-4', r'\[1d20r1-4] \d+, \d+')
+        # Test multiple similar rolls and reroll indicators
+        self.assertRegexp('dicebot roll 2#d20r1', r'\[1d20r1] \d+( \([\d\s]*rerolls?\))?, \d+( \([\d\s]*rerolls?\))?')
+        self.assertRegexp('dicebot roll 3#2d8r2', r'\[2d8r2] \d+( \([\d\s]*rerolls?\))?, \d+( \([\d\s]*rerolls?\))?, \d+( \([\d\s]*rerolls?\))?')
+        self.assertRegexp('dicebot roll 2#d20r-4', r'\[1d20r1-4] -?\d+( \([\d\s]*rerolls?\))?, -?\d+( \([\d\s]*rerolls?\))?')
+        # Test a roll that will surely result in rerolls
+        self.assertRegexp('dicebot roll 3#6d6r4', r'\[6d6r4] \d+( \([\d\s]*rerolls?\))?, \d+( \([\d\s]*rerolls?\))?, \d+( \([\d\s]*rerolls?\))?')
+
         self.assertNoResponse('dicebot roll 2#d8r8')
 
     def testRollMult(self):
