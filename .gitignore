@@ -10,3 +10,6 @@ tmp
 *.pyo
 .venv
 
+# Ignore IDE-related config files
+.project
+.pydevproject
